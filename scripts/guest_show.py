@@ -391,8 +391,8 @@ def _w_w32tm(a):
 
 
 def _w_nslookup(a):
-    ok = len(a) <= 2 and all(WIN_SIMPLE_NAME.fullmatch(t) and not t.startswith("-") for t in a)
-    return None if ok else "nslookup: plain names only"
+    ok = 1 <= len(a) <= 2 and all(WIN_SIMPLE_NAME.fullmatch(t) and not t.startswith("-") for t in a)
+    return None if ok else "nslookup: 1-2 plain names required (bare nslookup is interactive)"
 
 
 WIN_EXE_CHECKS = {  # non-cmdlet first tokens (lower-case)
@@ -471,6 +471,8 @@ def readonly_problem(os_family, cmd):
     if not cmd or not cmd.strip():
         return "empty command"
     if os_family == "linux":
+        if any(x in cmd for x in ("\n", "\r")):  # check before strip(): trailing newlines are not harmless
+            return "contains a newline"
         return _linux_problem(cmd.strip())
     if os_family == "windows":
         return _windows_problem(cmd)

@@ -16,6 +16,8 @@ Firewalls are `devices` rows with `device_type='firewall'`, `vendor='sophos'`, `
 
 `sophos_api.py` can only build `<Login>` + `<Get>` requests; it asserts this before every send. **`<Set>` / `<Remove>` are changes.** Sophos changes are **not supported yet**: `change.py` is netmiko-only, and extending it requires the user to type `APPROVE GUARD-EDIT`. Until then, prepare the change as a written proposal (exact XML or GUI steps, verify, rollback) for the user to apply. Never send a Set/Remove any other way (curl, Postman, ad-hoc Python).
 
+Before answering firewall facts (version, HA, license, API status) from the inventory, ask whether to refresh first (`network-inventory` skill). On **Refresh first**, run `sophos_api.py facts <fw> --update-inventory`.
+
 ## Quick reference
 
 ```bash

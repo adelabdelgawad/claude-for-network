@@ -105,6 +105,17 @@ Flags old snapshots, outdated VM hardware, low datastore space, and (with `--swi
 pointing at saved `show vlan brief` output) port groups whose VLAN exists on no switch. Writes
 `reports/vsphere_audit/<ts>/`.
 
+### `vsphere_storage.py` — storage risk
+
+```bash
+vsphere_storage.py [--vcenter NAME ...] [--snapshot-days 3] [--ds-free-crit 10] [--guest-free-warn 15] ...
+```
+
+Read-only. Flags datastores that are low on free space or thin-overcommitted, guest volumes that are nearly full
+(read through VMware Tools, so no guest login is needed), old or large snapshots, disks that need consolidation,
+and VMs on single-host datastores. Writes `report.md`, `summary.json`, `vm_storage.csv` and `raw/` to
+`reports/vsphere_storage/<ts>/`. Run `--help` for all thresholds.
+
 ### `guest_show.py` — read-only commands inside VMs
 
 ```bash

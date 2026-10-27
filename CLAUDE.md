@@ -11,6 +11,7 @@ Workspace for running IT network tasks (device inventory, config backups, audits
 3. **Before asking, show the user** the change ID, every target device (hostname and IP), the exact commands, the verify commands, the rollback, and whether the config will be saved. Then **stop and wait**.
 4. **The only path to a device change is `scripts/change.py apply <CHG-ID>`.** No ad-hoc netmiko/paramiko/ssh/expect/curl code, no new scripts that push config, no `python -c`. If the plan changes after approval, even slightly, re-plan and get a new approval.
 5. **Never bypass, disable, or edit the approval gate**: `.claude/hooks/`, `.claude/settings*.json`, `.claude/approvals/`, `scripts/change.py`, `scripts/netlib.py`. Editing them requires the user to type `APPROVE GUARD-EDIT`. If a hook blocks you, tell the user. Do not rephrase, split, or encode the command to get around it.
+   - Local inventory DB writes (`inventory/inventory.db` + `.commit(`, nothing that can reach a device) are allowed for 15 min after the user types `APPROVE INV-EDIT`. This never covers device changes.
 6. These rules bind **every model and subagent** (Opus, Sonnet, Haiku). Subagents may only `apply` an ID the user has already approved, and only when Opus hands it to them.
 
 The gate is enforced by hooks (see **Tools**), but the rule applies even where a hook misses something. Follow the `network-change` skill for the full workflow.
@@ -21,8 +22,10 @@ The gate is enforced by hooks (see **Tools**), but the rule applies even where a
 |---|---|
 | [`network-change`](.claude/skills/network-change/SKILL.md) | **Any** device/controller modification: the approval-gated plan → `APPROVE` → apply workflow |
 | [`network-show-collect`](.claude/skills/network-show-collect/SKILL.md) | Read-only `show` collection, audits, troubleshooting, running-config backups |
-| [`network-inventory`](.claude/skills/network-inventory/SKILL.md) | Looking up devices and targets, and recording device facts in the inventory |
+| [`network-inventory`](.claude/skills/network-inventory/SKILL.md) | Looking up devices and targets (asks whether to refresh before answering from stored data), and recording device facts in the inventory |
 | [`network-fanout`](.claude/skills/network-fanout/SKILL.md) | **Any** task covering more than one device: one concurrent script call, output kept in files, summaries only |
+| [`vsphere`](.claude/skills/vsphere/SKILL.md) | vCenter / ESXi / VMs / guest OS: inventory, discovery, live read-only views, audits, guest commands; vSphere changes are gated |
+| [`tasks`](.claude/skills/tasks/SKILL.md) | The task list: show open tasks/findings as a checklist whenever asked, import findings from reports, track status |
 | [`sophos-xg`](.claude/skills/sophos-xg/SKILL.md) | Sophos XG / SFOS firewalls: XML API (Get-only) facts, rules/NAT/objects, XML backups, rule audits, adding firewalls |
 
 ## Concurrency & token use
@@ -48,8 +51,10 @@ The gate is enforced by hooks (see **Tools**), but the rule applies even where a
 | `scripts/vsphere_audit.py` | vSphere audit (snapshots, HW version, datastore space, port-group VLANs vs switches) → `reports/vsphere_audit/<ts>/` | Read-only |
 | `scripts/guest_show.py` | Allowlisted read-only commands inside guest OSes (SSH for Linux, WinRM for Windows), `--preset` bundles | Read-only |
 | `scripts/vmlib.py` | Shared read-only vSphere helpers (`call_ro()` allowlists the API methods) | — |
-| `.claude/hooks/change_guard.py` | PreToolUse hook: blocks change commands outside `change.py`, and edits to the gate | — |
-| `.claude/hooks/approval_capture.py` | UserPromptSubmit hook: records `APPROVE`/`REJECT <ID>` typed by the user | — |
+| `scripts/vsphere_storage.py` | Storage risk: datastore free/overcommit, guest volume free (VMware Tools), snapshots, consolidation → `reports/vsphere_storage/<ts>/` (`report.md`, `summary.json`, `vm_storage.csv`) | Read-only |
+| `scripts/tasks.py` | Task list: `list` (checklist / `--md` / `--json`), `summary`, `show`, `add`, `start` / `done` / `block` / `set`, `import storage\|vmtools` | No |
+| `.claude/hooks/change_guard.py` | PreToolUse hook: blocks change commands outside `change.py`, and edits to the gate; allows local inventory DB writes under `APPROVE INV-EDIT` (test: `python3 .claude/hooks/test_change_guard.py`) | — |
+| `.claude/hooks/approval_capture.py` | UserPromptSubmit hook: records `APPROVE`/`REJECT <ID>` typed by the user (`<ID>` = `CHG-...`, `GUARD-EDIT`, `INV-EDIT`) | — |
 
 All scripts share the target selectors: hostnames/IPs, `--match GLOB`, `--role`, `--all`, `--status` (default `active`). Run `--help` for details.
 
@@ -72,6 +77,7 @@ All scripts share the target selectors: hostnames/IPs, `--match GLOB`, `--role`,
   - `status`: `active` | `spare` | `decommissioned` | `auth_failed`. Only target `active` devices unless told otherwise.
   - `auth_failed` = SSH open but the `.env` credentials were rejected (the SSH banner is in `notes`); needs a different `credential_ref`.
 - `change_log(device_id, action, details, performed_by, performed_at)` — record every change made to a device.
+- `tasks(key, title, category, severity, status, object_type, object_name, detail, action, needs_change, source, owner, due, notes, closed_at)` — the task list (`scripts/tasks.py`, `tasks` skill). `key` dedupes imported findings. `status`: `todo` | `in_progress` | `blocked` | `done` | `wontfix`. `needs_change=1` means doing the task is a gated change.
 - `firewall_details(device_id, api_port, api_enabled, verify_ssl, api_credential_ref, ha_mode, ha_role, ha_peer_id, license_expiry, notes)` — Sophos XG facts, one row per `devices` row with `device_type='firewall'`. XML API `<Get>` is read-only; `<Set>`/`<Remove>` are **changes**.
 
 ### VMware vSphere (servers and guest operating systems)
@@ -95,6 +101,19 @@ Site-specific subnets and device facts live in `CLAUDE.local.md` (gitignored; lo
 - For any task on known devices, **read the device list from `inventory/inventory.db`** (`WHERE status='active'`) — don't scan the subnet again.
 - Only rescan when the user asks, or a device is missing or new: `.venv/bin/python scripts/discover.py <subnet|ip> [...] [--cred REF]`. It does an SSH port sweep, runs `show version`, and upserts by `mgmt_ip` (hostname, model, serial, os_type, os_version).
 - Connect with `os_type` from the inventory as the Netmiko `device_type` (`cisco_ios` / `cisco_xe`).
+
+## Inventory freshness — ask before answering from stored data
+
+Stored inventory records can be outdated or legacy. **When the user asks for information about inventory devices** (switches, firewalls, ESXi hosts, VMs, vCenters: version, model, serial, IP, status, power state, guest OS, counts or lists), **ask first whether to refresh the inventory for those devices**, before answering from the DB.
+
+1. Resolve the devices from the DB, then ask with `AskUserQuestion`. Name the devices (or the count and selector) and their `updated_at`, and offer **Refresh first** or **Answer from stored data**.
+2. On **Refresh first**, run one read-only refresh call for just those devices (no `APPROVE` needed; inventory updates don't change devices), then answer from the refreshed records and say what changed:
+   - Switches: `scripts/discover.py <mgmt_ip> [...] [--cred <credential_ref>]`
+   - Sophos firewalls: `scripts/sophos_api.py facts <fw> [...] --update-inventory`
+   - ESXi hosts / VMs / port groups: `scripts/vsphere.py discover [VCENTER]`
+3. On **Answer from stored data**, answer and label it as stored data with its `updated_at`.
+
+Don't ask when the user already said to refresh or to use stored data, when the same devices were refreshed earlier in this session, or when the task collects live data anyway (`show.py`, audits, backups). Details: `network-inventory` skill.
 
 ## Credentials
 

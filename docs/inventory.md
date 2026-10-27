@@ -37,6 +37,23 @@ can never target a VM or ESXi host.
 | `machines` | VMs, keyed by `instance_uuid`: guest OS, sizing, power state, tools, owner, management protocol |
 | `machine_nics` | VM NICs with MAC, port group and IPs |
 
+## Freshness: Claude asks before answering from stored data
+
+Inventory records can be outdated. When you ask Claude about devices in the inventory, it first
+asks whether to refresh those devices, showing when their records were last updated:
+
+- **Refresh first** — Claude runs a read-only refresh for just those devices, then answers and
+  reports what changed:
+  - switches: `scripts/discover.py <mgmt_ip> ... [--cred REF]`
+  - Sophos firewalls: `scripts/sophos_api.py facts <fw> ... --update-inventory`
+  - ESXi hosts / VMs: `scripts/vsphere.py discover [VCENTER]`
+- **Answer from stored data** — Claude answers from the database and labels the answer with the
+  record's `updated_at`.
+
+Say "refresh" or "stored data is fine" in your question to skip the prompt. Claude also skips it
+for devices already refreshed in the session, and for tasks that collect live data anyway
+(`show.py`, audits, backups).
+
 ## Querying
 
 Use `scripts/inventory.py` (see [scripts.md](scripts.md)). For ad-hoc SQL without the `sqlite3` CLI:

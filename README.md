@@ -23,6 +23,9 @@ until the user types `APPROVE <CHG-ID>` for that exact plan, and Claude Code hoo
   outside the change tool, and protects the gate's own files.
 - **Claude skills.** Project skills teach Claude the change workflow, read-only collection,
   inventory lookups and multi-device fan-out.
+- **Task list.** Audit findings become tracked tasks (severity, status, owner, due date,
+  suggested fix) in the inventory DB. Re-importing a report removes duplicates, reopens findings that
+  return, and auto-closes the ones that are fixed. Ask Claude "show my tasks" at any time.
 
 ## Quick start
 
@@ -46,6 +49,7 @@ Then ask Claude things like:
 - "Audit logging coverage across all active switches."
 - "Set the NTP servers on all `SW-*` switches." → Claude plans the change and waits for
   `APPROVE <CHG-ID>`.
+- "Show my open tasks" / "List the critical storage findings as a checklist" / "Mark task 12 done."
 
 See [docs/setup.md](docs/setup.md) for the full setup.
 
@@ -60,6 +64,33 @@ See [docs/setup.md](docs/setup.md) for the full setup.
 ```
 
 Details: [docs/change-workflow.md](docs/change-workflow.md).
+
+## Task list
+
+Findings from audits and reports are tracked as tasks in `inventory/inventory.db` (`tasks` table):
+
+```bash
+.venv/bin/python scripts/tasks.py import storage     # from the newest reports/vsphere_storage/<ts>/
+.venv/bin/python scripts/tasks.py import vmtools     # VMs with old / missing / stopped VMware Tools
+.venv/bin/python scripts/tasks.py list               # open tasks as a checklist, grouped by category
+.venv/bin/python scripts/tasks.py list --md          # markdown checklist to paste into Teams or email
+.venv/bin/python scripts/tasks.py summary
+.venv/bin/python scripts/tasks.py start 12 | done 12 --note "..." | block 12 --note "..."
+```
+
+`[ ]` todo · `[~]` in progress · `[!]` blocked · `[x]` done · `[-]` won't fix. Tasks marked
+*needs approval* modify a device or VM when carried out, so they go through the approval gate.
+
+Where the tasks live:
+
+| Path | What it is |
+|---|---|
+| `inventory/inventory.db` → `tasks` table | Source of truth (gitignored) |
+| `reports/tasks/TASKS.md` | Readable checklist of open and recently closed tasks, rewritten after every task update (gitignored) |
+| `reports/tasks/tasks.csv` | All tasks for Excel (gitignored) |
+| `reports/tasks/tasks.json` | All tasks, machine-readable (gitignored) |
+| `scripts/tasks.py` | The CLI (`list`, `summary`, `show`, `add`, `start`, `done`, `block`, `set`, `import`, `export`) |
+| `.claude/skills/tasks/SKILL.md` | Tells Claude how to show and update tasks when you ask |
 
 ## Project structure
 
@@ -83,7 +114,9 @@ Details: [docs/change-workflow.md](docs/change-workflow.md).
 │       ├── network-change/         # plan → APPROVE → apply workflow
 │       ├── network-show-collect/   # read-only show collection and backups
 │       ├── network-inventory/      # inventory lookups and updates
-│       └── network-fanout/         # running one task across many devices
+│       ├── network-fanout/         # running one task across many devices
+│       ├── vsphere/                # vCenter / ESXi / VM / guest OS work
+│       └── tasks/                  # task list: list, import findings, track status
 │
 ├── scripts/
 │   ├── inventory.py                # Query devices, VMs, ESXi hosts, vCenters
@@ -95,6 +128,8 @@ Details: [docs/change-workflow.md](docs/change-workflow.md).
 │   ├── change.py                   # plan / show / list / apply (the only change path)
 │   ├── vsphere.py                  # vCenter discovery → inventory, read-only views
 │   ├── vsphere_audit.py            # vSphere audit
+│   ├── vsphere_storage.py          # Storage risk (datastores, guest volumes, snapshots)
+│   ├── tasks.py                    # Task list: import findings, list, track status
 │   ├── guest_show.py               # Read-only commands inside Linux/Windows VMs
 │   ├── netlib.py                   # Shared targeting, credentials, read-only allowlist
 │   └── vmlib.py                    # Read-only vSphere helpers

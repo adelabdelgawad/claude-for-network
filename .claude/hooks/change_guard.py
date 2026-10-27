@@ -25,6 +25,10 @@ DEVICE_PATTERNS = [re.compile(p, re.I) for p in [
     r"\b(curl|wget|http|https|httpie)\b.*(-X\s*(POST|PUT|PATCH|DELETE)|--data|\s-d\s|--request\s+(POST|PUT|PATCH|DELETE))",
     r"postman\s+request\b.*\b(POST|PUT|PATCH|DELETE)\b",
 ]]
+COMMIT = r"\.commit\s*\("
+INV_DB = "inventory/inventory.db"
+DEVICE_IO = re.compile(r"netmiko|ConnectHandler|paramiko|\bssh\b|urllib|requests|https?:|curl|wget|socket|telnetlib",
+                       re.I)
 SINGLE_CHANGE = re.compile(r"^\s*(\S*python3?\s+)?\S*scripts/change\.py\s+(plan|show|list|apply)\b")
 CHAINERS = [";", "&&", "||", "|", "`", "$(", "\n"]
 NOISE = ["2>&1", ">&2", "2>/dev/null", ">/dev/null"]
@@ -39,13 +43,24 @@ def deny(reason):
     sys.exit(2)
 
 
-def guard_edit_valid(root):
+def approval_valid(root, name):
+    """True if the user typed `APPROVE <name>` (GUARD-EDIT / INV-EDIT) within the last 15 minutes."""
     try:
-        d = json.loads((root / ".claude" / "approvals" / "GUARD-EDIT.json").read_text())
+        d = json.loads((root / ".claude" / "approvals" / f"{name}.json").read_text())
         age = datetime.now(timezone.utc) - datetime.fromisoformat(d["approved_at"])
         return d.get("status") == "approved" and age.total_seconds() < 15 * 60
     except Exception:  # noqa: BLE001
         return False
+
+
+def guard_edit_valid(root):
+    return approval_valid(root, "GUARD-EDIT")
+
+
+def inventory_write(text):
+    """A local inventory DB write: `.commit(` is the only device pattern hit, and nothing can reach a device."""
+    hits = [p.pattern for p in DEVICE_PATTERNS if p.search(text)]
+    return hits == [COMMIT] and INV_DB in text and not DEVICE_IO.search(text)
 
 
 def rel_to_root(path, root, cwd):
@@ -74,7 +89,11 @@ def contents(tool_input):
     return [c for c in out if isinstance(c, str)]
 
 
-def check_patterns(text):
+def check_patterns(text, root):
+    if inventory_write(text):
+        if approval_valid(root, "INV-EDIT"):
+            return
+        deny("local inventory DB write needs the user to type `APPROVE INV-EDIT` (valid 15 min).")
     for pat in DEVICE_PATTERNS:
         if pat.search(text):
             deny(f"device-changing pattern /{pat.pattern}/ detected.")
@@ -97,7 +116,7 @@ def handle_file_tool(tool_input, root, cwd):
     if rel.startswith("changes/") and not rel.endswith(DATA_EXT):
         return
     for text in contents(tool_input):
-        check_patterns(text)
+        check_patterns(text, root)
 
 
 def handle_bash(cmd, root):
@@ -117,7 +136,7 @@ def handle_bash(cmd, root):
             return
     if re.search(r"scripts/change\.py\s+apply\b", cmd) and not re.match(r"^\s*(cat|less|grep|head|tail|ls)\b", cmd):
         deny("`change.py apply` must be run as a single, unchained command.")
-    check_patterns(cmd)
+    check_patterns(cmd, root)
 
 
 def main():

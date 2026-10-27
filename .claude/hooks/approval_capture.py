@@ -12,7 +12,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-LINE = re.compile(r"^\s*(APPROVE|REJECT)\s+(CHG-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}|GUARD-EDIT)\s*$")
+LINE = re.compile(r"^\s*(APPROVE|REJECT)\s+(CHG-[0-9]{8}-[0-9]{6}-[0-9a-f]{4}|GUARD-EDIT|INV-EDIT)\s*$")
+WINDOW_TOKENS = {
+    "GUARD-EDIT": "protected guard files may be edited",
+    "INV-EDIT": "local inventory DB writes (inventory/inventory.db) are allowed",
+}
 
 
 def now():
@@ -35,15 +39,15 @@ def main():
         verb, cid = m.groups()
         try:
             adir.mkdir(parents=True, exist_ok=True)
-            if cid == "GUARD-EDIT":
+            if cid in WINDOW_TOKENS:
                 if verb == "APPROVE":
-                    (adir / "GUARD-EDIT.json").write_text(
+                    (adir / f"{cid}.json").write_text(
                         json.dumps({"id": cid, "status": "approved", "approved_at": now()}, indent=2))
-                    print("[approval-gate] User APPROVED GUARD-EDIT: protected guard files may be edited "
+                    print(f"[approval-gate] User APPROVED {cid}: {WINDOW_TOKENS[cid]} "
                           "for 15 minutes (multi-use).")
                 else:
-                    (adir / "GUARD-EDIT.json").write_text(json.dumps({"id": cid, "status": "rejected"}))
-                    print("[approval-gate] GUARD-EDIT rejected; protected files stay locked.")
+                    (adir / f"{cid}.json").write_text(json.dumps({"id": cid, "status": "rejected"}))
+                    print(f"[approval-gate] {cid} rejected; it stays locked.")
                 continue
             plan = root / "changes" / cid / "plan.json"
             if verb == "REJECT":

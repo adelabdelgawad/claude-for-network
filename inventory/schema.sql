@@ -206,3 +206,35 @@ AFTER UPDATE ON machines
 BEGIN
     UPDATE machines SET updated_at = datetime('now') WHERE id = NEW.id;
 END;
+
+-- Ops task / finding list (scripts/tasks.py). key = dedupe key, e.g. 'vmtools:SMH-PACS-01'.
+CREATE TABLE IF NOT EXISTS tasks (
+    id            INTEGER PRIMARY KEY,
+    key           TEXT UNIQUE,
+    title         TEXT NOT NULL,
+    category      TEXT,                        -- vmware-tools, storage, snapshot, network, security, lifecycle, other
+    severity      TEXT,                        -- crit, warn, info
+    status        TEXT NOT NULL DEFAULT 'todo', -- todo, in_progress, blocked, done, wontfix
+    object_type   TEXT,                        -- vm, esxi, datastore, device, vcenter
+    object_name   TEXT,
+    detail        TEXT,
+    action        TEXT,                        -- suggested fix, plain text
+    needs_change  INTEGER DEFAULT 0,           -- 1 = executing it modifies a device/VM -> approval gate
+    source        TEXT,                        -- report path or 'inventory'
+    owner         TEXT,
+    due           TEXT,
+    notes         TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_category ON tasks(category, status);
+
+CREATE TRIGGER IF NOT EXISTS trg_tasks_updated
+AFTER UPDATE ON tasks
+WHEN NEW.updated_at = OLD.updated_at
+BEGIN
+    UPDATE tasks SET updated_at = datetime('now') WHERE id = NEW.id;
+END;
