@@ -14,16 +14,38 @@ from pathlib import Path
 TOOLS = {"Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"}
 PROTECTED = [".claude/hooks/", ".claude/settings.json", ".claude/settings.local.json",
              ".claude/approvals/", "scripts/change.py", "scripts/netlib.py"]
+GUARD_FILES = ("change_guard.py", "test_change_guard.py")
 WRITEISH = ["sed -i", "perl -i", "tee", "cp ", "mv ", "rm ", "truncate", "chmod", "chown", "ln ",
             "install ", "dd ", "open(", "write_text", "unlink"]
-DEVICE_PATTERNS = [re.compile(p, re.I) for p in [
+PUSH = [
     r"send_config_set", r"send_config_from_file", r"save_config", r"write_channel", r"\.commit\s*\(",
+    r"\bssh\s+\S*@?\d+\.\d+\.\d+\.\d+",
+    r"\b(curl|wget|http|https|httpie)\b.*(-X\s*(POST|PUT|PATCH|DELETE)|--data|\s-d\s|--request\s+(POST|PUT|PATCH|DELETE))",
+    r"postman\s+request\b.*\b(POST|PUT|PATCH|DELETE)\b",
+]
+IOS_CMDS = [
     r"\bconf(ig(ure)?)?\s+t(erm(inal)?)?\b", r"\bwr(ite)?\s+mem(ory)?\b", r"\bwrite\s+erase\b",
     r"\bcopy\s+run(ning-config)?\s+start(up-config)?\b", r"(?<!show )\breload\b",
     r"\bno\s+shut(down)?\b", r"\bshutdown\b", r"\berase\s+(startup|nvram|flash)",
-    r"\b(sshpass|telnet|plink)\b", r"\bssh\s+\S*@?\d+\.\d+\.\d+\.\d+",
-    r"\b(curl|wget|http|https|httpie)\b.*(-X\s*(POST|PUT|PATCH|DELETE)|--data|\s-d\s|--request\s+(POST|PUT|PATCH|DELETE))",
-    r"postman\s+request\b.*\b(POST|PUT|PATCH|DELETE)\b",
+]
+# Bash / shell scripts: IOS command words anywhere. Other files (Python, ...): only as a string that *starts
+# with* the command ("reload", " shutdown", f"conf t ...") - titles, comments and parsing regexes such as
+# r"Last reload reason: (.+)" stay allowed; push methods (PUSH) are blocked everywhere.
+DEVICE_PATTERNS = [re.compile(p, re.I) for p in PUSH + IOS_CMDS]
+PUSH_PATTERNS = DEVICE_PATTERNS[:len(PUSH)]
+IOS_LITERAL = re.compile(r"[\"']\s*(?:do\s+)?(?:" + "|".join(IOS_CMDS) + r")", re.I)
+# Remote-shell tools are blocked when *used*, not when merely named (a check title, a grep, a comment):
+# in command position (start, after ; & | ( { $( ` newline or `-c '`, behind sudo/env/timeout/...),
+# or invoked from code (telnetlib, netmiko *_telnet, subprocess/os.system argv, "tool <host>" strings).
+# Command position applies to Bash and shell scripts only (in Python, `(ftp|telnet)` is a regex, not a pipe).
+RSH = r"(?:\S*/)?(?:sshpass|telnet|plink)\b"
+SHELL_EXT = (".sh", ".bash")
+RSH_SHELL = re.compile(r"(?:^|[;&|`({\n]|\$\(|-c\s+[\"'])\s*(?:\w+=\S*\s+|(?:sudo|exec|env|nohup|command|xargs|time|"
+                       r"nice|stdbuf|timeout)(?:\s+\S+){0,3}?\s+)*" + RSH, re.I | re.M)
+RSH_CODE = [re.compile(p, re.I) for p in [
+    r"\btelnetlib\b", r"\b\w+_telnet\b",
+    r"\b(?:run|call|Popen|check_output|check_call|system|popen|spawn\w*|exec\w*)\s*\(\s*\[?\s*[\"']" + RSH,
+    RSH + r"\s+(?:-\S+\s+)*(?:\d{1,3}(?:\.\d{1,3}){3}|[{$%]|\w[\w.-]*@)",
 ]]
 COMMIT = r"\.commit\s*\("
 INV_DB = "inventory/inventory.db"
@@ -89,12 +111,13 @@ def contents(tool_input):
     return [c for c in out if isinstance(c, str)]
 
 
-def check_patterns(text, root):
+def check_patterns(text, root, shell=True):
     if inventory_write(text):
         if approval_valid(root, "INV-EDIT"):
             return
         deny("local inventory DB write needs the user to type `APPROVE INV-EDIT` (valid 15 min).")
-    for pat in DEVICE_PATTERNS:
+    pats = DEVICE_PATTERNS + [RSH_SHELL] if shell else PUSH_PATTERNS + [IOS_LITERAL]
+    for pat in pats + RSH_CODE:
         if pat.search(text):
             deny(f"device-changing pattern /{pat.pattern}/ detected.")
 
@@ -104,6 +127,12 @@ def handle_file_tool(tool_input, root, cwd):
     if not path:
         return
     absn, rel = rel_to_root(path, root, cwd)
+    # A change-guard copy in any repo (e.g. a plugin's hooks/) is a guard file too: locked unless GUARD-EDIT.
+    p = Path(absn)
+    if p.parent.name == "hooks" and p.name in GUARD_FILES:
+        if not guard_edit_valid(root):
+            deny(f"{absn} is a change-guard file (the user must type `APPROVE GUARD-EDIT` to unlock for 15 min).")
+        return
     prot = is_protected(rel)
     if prot:
         if prot == ".claude/approvals/":
@@ -116,7 +145,7 @@ def handle_file_tool(tool_input, root, cwd):
     if rel.startswith("changes/") and not rel.endswith(DATA_EXT):
         return
     for text in contents(tool_input):
-        check_patterns(text, root)
+        check_patterns(text, root, shell=rel.endswith(SHELL_EXT) or "." not in Path(rel).name)
 
 
 def handle_bash(cmd, root):

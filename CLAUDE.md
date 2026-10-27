@@ -27,6 +27,7 @@ The gate is enforced by hooks (see **Tools**), but the rule applies even where a
 | [`vsphere`](.claude/skills/vsphere/SKILL.md) | vCenter / ESXi / VMs / guest OS: inventory, discovery, live read-only views, audits, guest commands; vSphere changes are gated |
 | [`tasks`](.claude/skills/tasks/SKILL.md) | The task list: show open tasks/findings as a checklist whenever asked, import findings from reports, track status |
 | [`sophos-xg`](.claude/skills/sophos-xg/SKILL.md) | Sophos XG / SFOS firewalls: XML API (Get-only) facts, rules/NAT/objects, XML backups, rule audits, adding firewalls |
+| [`checklist`](.claude/skills/checklist/SKILL.md) | Per-device-type checklists (every item pass/warn/crit/skip): vSphere approved; new items or types need the user's approval first |
 
 ## Concurrency & token use
 
@@ -43,15 +44,21 @@ The gate is enforced by hooks (see **Tools**), but the rule applies even where a
 | `scripts/show.py` | Runs allowlisted read-only commands on targets (`--out` saves to `outputs/<ts>/`) | Read-only |
 | `scripts/backup.py` | Running-config → `backups/<hostname>/<ts>.cfg` (Sophos → `.xml` via `sophos_api.py`) | Read-only |
 | `scripts/sophos_api.py` | Sophos XG XML API, Get-only: `get` / `backup` (`backups/<host>/<ts>.xml`) / `facts [--update-inventory]` / `audit` → `reports/sophos_audit/<ts>/` | Read-only |
+| `scripts/veeam_api.py` | Veeam B&R v12+ REST API, GET-only (`--host` required, not in the inventory): `facts` / `get` / `jobs` / `sessions` / `repos` / `report` → `reports/veeam/<ts>/`; creds `NET_VEEAM_*` | Read-only |
 | `scripts/audit.py` | Concurrent security audit → `audits/<date>/` (`findings.json`, `findings.csv`, `summary.txt`, raw output per host; secrets masked) | Read-only |
 | `scripts/log_audit.py` | Concurrent logging-coverage and abnormal-log audit → `reports/log_audit/<ts>/` (`summary.json`, `report.md`, `raw/`) | Read-only |
+| `scripts/switch_checklist.py` | Switch/router checklist SW01–SW34 (Cisco IOS/IOS-XE), one concurrent show-only pass; reuses `audit.py` + `log_audit.py` analysis; `--from-raw DIR` re-analyzes offline → `reports/checklist/switch/<ts>/` (`summary.json`, `checklist.md`, `findings.csv`, `raw/`) | Read-only |
+| `scripts/sophos_checklist.py` | Sophos XG/SFOS checklist FW01–FW27, one concurrent XML API `<Get>`-only pass (via `sophos_api.py`; reuses `analyze()` for FW07–FW10/FW13); entities the firmware lacks make items skip; `--from-raw DIR` re-analyzes offline → `reports/checklist/sophos/<ts>/` (`summary.json`, `checklist.md`, `findings.csv`, `raw/<host>/<Entity>.xml`, secrets masked) | Read-only |
 | `scripts/change.py` | `plan` / `show` / `list` / `apply`; `apply` refuses without a valid user approval, backs up, pushes, verifies, and logs to `change_log` | **Yes (only after `APPROVE`)** |
 | `scripts/netlib.py` | Shared target resolution, credentials, backup helper | — |
 | `scripts/vsphere.py` | `add-vcenter` / `discover` (upserts vSphere tables) / `show` snapshots, datastores, alarms, host NICs, VMs | Read-only |
 | `scripts/vsphere_audit.py` | vSphere audit (snapshots, HW version, datastore space, port-group VLANs vs switches) → `reports/vsphere_audit/<ts>/` | Read-only |
 | `scripts/guest_show.py` | Allowlisted read-only commands inside guest OSes (SSH for Linux, WinRM for Windows), `--preset` bundles | Read-only |
+| `scripts/guest_security.py` | In-guest OS security audit (patches, AV, firewall, risky services, admins, failed logons, services, time, Linux hardening): runs the `security` preset or parses `--from DIR` → `reports/guest_security/<ts>/` (`summary.json`, `report.md`, `findings.csv`) | Read-only |
 | `scripts/vmlib.py` | Shared read-only vSphere helpers (`call_ro()` allowlists the API methods) | — |
 | `scripts/vsphere_storage.py` | Storage risk: datastore free/overcommit, guest volume free (VMware Tools), snapshots, consolidation → `reports/vsphere_storage/<ts>/` (`report.md`, `summary.json`, `vm_storage.csv`) | Read-only |
+| `scripts/vsphere_checklist.py` | Comprehensive vSphere health/security checklist (items A01–H52: vCenter, clusters, hosts, datastores, VM OS/security, perf, guest storage, optional Veeam coverage, merged guest_security) → `reports/checklist/vsphere/<ts>/` (`summary.json`, `checklist.md`, `findings.csv`, `raw/`) | Read-only |
+| `scripts/veeam_checklist.py` | Veeam B&R health/security checklist (items VB01–VB20: server, jobs, repositories, 3-2-1, coverage vs the vSphere inventory), REST GET-only via `veeam_api.py` (`--host` required, `--from-raw DIR` re-analyses saved data) → `reports/checklist/veeam/<ts>/` (`summary.json`, `checklist.md`, `findings.csv`, `raw/`) | Read-only |
 | `scripts/tasks.py` | Task list: `list` (checklist / `--md` / `--json`), `summary`, `show`, `add`, `start` / `done` / `block` / `set`, `import storage\|vmtools` | No |
 | `.claude/hooks/change_guard.py` | PreToolUse hook: blocks change commands outside `change.py`, and edits to the gate; allows local inventory DB writes under `APPROVE INV-EDIT` (test: `python3 .claude/hooks/test_change_guard.py`) | — |
 | `.claude/hooks/approval_capture.py` | UserPromptSubmit hook: records `APPROVE`/`REJECT <ID>` typed by the user (`<ID>` = `CHG-...`, `GUARD-EDIT`, `INV-EDIT`) | — |
@@ -75,7 +82,7 @@ All scripts share the target selectors: hostnames/IPs, `--match GLOB`, `--role`,
 - `devices(hostname, mgmt_ip, site_id, device_type, role, vendor, model, os_type, os_version, serial, port, credential_ref, status, notes, created_at, updated_at)`
   - `os_type` uses Netmiko device_type names (`cisco_ios`, `cisco_nxos`, `fortinet`, `aruba_os`, ...).
   - `status`: `active` | `spare` | `decommissioned` | `auth_failed`. Only target `active` devices unless told otherwise.
-  - `auth_failed` = SSH open but the `.env` credentials were rejected (the SSH banner is in `notes`); needs a different `credential_ref`.
+  - `auth_failed` = SSH open but the `.env` credentials were rejected (the SSH banner is in `notes`); fix the shared account for that type, not a new `credential_ref`.
 - `change_log(device_id, action, details, performed_by, performed_at)` — record every change made to a device.
 - `tasks(key, title, category, severity, status, object_type, object_name, detail, action, needs_change, source, owner, due, notes, closed_at)` — the task list (`scripts/tasks.py`, `tasks` skill). `key` dedupes imported findings. `status`: `todo` | `in_progress` | `blocked` | `done` | `wontfix`. `needs_change=1` means doing the task is a gated change.
 - `firewall_details(device_id, api_port, api_enabled, verify_ssl, api_credential_ref, ha_mode, ha_role, ha_peer_id, license_expiry, notes)` — Sophos XG facts, one row per `devices` row with `device_type='firewall'`. XML API `<Get>` is read-only; `<Set>`/`<Remove>` are **changes**.
@@ -121,8 +128,9 @@ A device's `credential_ref` (default `DEFAULT`) maps to env vars:
 `NET_<REF>_USERNAME`, `NET_<REF>_PASSWORD`, `NET_<REF>_ENABLE`.
 Sophos XG firewalls use `SOPHOS` (SSH console) and `SOPHOSAPI` (XML API, Get-only; `firewall_details.api_credential_ref`).
 vSphere and guest-OS credential sets in `.env` (empty until the user fills them in):
-`VCENTER` (vCenter SSO, read-only role preferred), `ESXI` (direct host login), `WINDOWS` (WinRM, plus `WINRM_TRANSPORT`), and `LINUX` (SSH, plus `NET_LINUX_SSH_KEY`; `NET_LINUX_ENABLE` = sudo password).
+`VCENTER` (vCenter SSO, read-only role preferred), `ESXI` (direct host login), `WINDOWS` (WinRM, plus `WINRM_TRANSPORT`), `LINUX` (SSH, plus `NET_LINUX_SSH_KEY`; `NET_LINUX_ENABLE` = sudo password), and `VEEAM` (Veeam B&R REST API on port 9419, read-only Backup Viewer role preferred).
 Hosts and IPs go in the inventory, not in `.env`.
+One credential set per inventory type (`DEFAULT` switches, `SOPHOS`/`SOPHOSAPI`, `VCENTER`, `ESXI`, `WINDOWS`, `LINUX`, `VEEAM`), never per site or per device: use a service account that is valid on every device of that type (e.g. an AD domain account added to each vCenter's SSO identity sources).
 Load them from `.env` at runtime (e.g. `python-dotenv` or `set -a; . ./.env; set +a`) — never hardcode or echo them.
 
 ## Model roles

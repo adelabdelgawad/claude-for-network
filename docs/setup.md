@@ -53,8 +53,9 @@ Then discover devices (read-only: SSH port sweep plus `show version`):
 .venv/bin/python scripts/inventory.py counts
 ```
 
-Devices that answer SSH but reject the credentials are stored as `auth_failed`; give them a
-different `credential_ref` and rerun discovery for their IPs.
+Devices that answer SSH but reject the credentials are stored as `auth_failed`; don't add a new `credential_ref` for them — make the type's shared account valid on those devices (or fix it in `.env`) and rerun discovery for their IPs.
+
+One credential set per inventory type (`DEFAULT` switches, `SOPHOS`/`SOPHOSAPI`, `VCENTER`, `ESXI`, `WINDOWS`, `LINUX`, `VEEAM`), never per site or per device: use a service account that is valid on every device of that type (e.g. an AD domain account added to each vCenter's SSO identity sources).
 
 ## 4. Site context for Claude (optional)
 
