@@ -1,0 +1,45 @@
+# --- Secrets -------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- Site data: inventory, configs, outputs (never publish) --------------
+inventory/*.db
+inventory/*.db-journal
+inventory/*.db.bak*
+*.db-journal
+backups/*
+outputs/*
+reports/*
+audits/*
+changes/*
+!backups/.gitkeep
+!outputs/.gitkeep
+!reports/.gitkeep
+!audits/.gitkeep
+!changes/.gitkeep
+
+# Site-specific Claude context (subnets, hostnames)
+CLAUDE.local.md
+
+# --- Claude Code local state ---------------------------------------------
+.claude/approvals/*
+!.claude/approvals/.gitkeep
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# --- Python ---------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# --- Editors / OS ---------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
